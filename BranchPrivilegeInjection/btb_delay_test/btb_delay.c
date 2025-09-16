@@ -6,15 +6,16 @@
 #include <fcntl.h>
 #include <string.h>
 
-//#include "compiler.h"
 //#include "stats.h"
 #include "btb_delay.h"
 
-#define MAX_OPS 10
+#define MAX_OPS 1024
 #define NUM_ROUNDS 100000
 
 #define STR_HELPER(x) #x
 #define STR(x) STR_HELPER(x)
+
+
 
 // typedef code_snip_t code_snip_t;
 // 주어진 어셈블리 코드 조각을 개별 심볼로 주어진 인자 .text 섹션에 박아 넣음
@@ -48,28 +49,31 @@
 
 
 // 점프할 코드 타겟 할당
-void* map_code(unsigned long addr, void* code_templ, size_t code_size){
-    // MAP_FIXED_NOREPLACE 플래그는 해당 위치에 강제로 할당하고 이미 있는 자리면 실패를 반환
+unsigned long map_code(unsigned long addr, void* code_templ, size_t code_size){
+     // MAP_FIXED_NOREPLACE 플래그는 해당 위치에 강제로 할당하고 이미 있는 자리면 실패를 반환
     // page alignment
+    size_t pagesz = (size_t)getpagesize();
     size_t off = addr &0xfff;
     unsigned long base = addr & ~0xfff;
-
-    
-    void* page = mmap((void*)base,code_size, PROT_READ | PROT_WRITE | PROT_EXEC,MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED_NOREPLACE,-1,0);
+    // 할당할 메모리 영역 크기는 [base ~ (base + offset + code_size의 페이지 사이즈로 반올림)]영역임
+    size_t map_len = (off + code_size + pagesz - 1) & ~(pagesz - 1);
+    void* page = mmap((void*)base,map_len, PROT_READ | PROT_WRITE | PROT_EXEC,MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED_NOREPLACE,-1,0);
 
     if(page == MAP_FAILED){
         perror("MMAP");
+        
         return -1;
     }
+
     // char*로 캐스팅해야 오프셋을 더할 수 있음. void* 타입에 산술연산은 표준이 아님.
     memcpy((char *)page + off,code_templ,code_size);
-    
+
     return page + off;
 }
 
 
 // 점프 테이블 0번째 점프 -> src, 1번째 점프 -> src, 2번째 점프 -> dst(종료)
-unsigned long jmp_table[4];
+unsigned long jmp_table[3];
 
 // my_snip으로 생성된 심볼들을 참조
 extern unsigned char train_src_call_start[];
@@ -85,7 +89,7 @@ extern unsigned char train_dst_call_end[];
     last(finish) = jmp_table[2] = train_dst_call
 */
 my_snip(train_src_call,
-    ".rept " STR(10) "\n"
+    ".rept " STR(MAX_OPS) "\n"
     "nop\n"
     ".endr\n"
     "lfence\n"
@@ -99,11 +103,13 @@ my_snip(train_dst_call,
     " ret\n"
 );
 
-void run_one_nop(int max_rounds,int num_ops, unsigned long src_addr){
+void run_one_nop(int num_nops, unsigned long src_addr){
     
-    unsigned long jmp_offset = MAX_OPS - num_ops;
-    printf("jump to %p", (void*)(src_addr + jmp_offset));
+    unsigned long jmp_offset = MAX_OPS - num_nops;
+    //printf("jump to %p", (void*)(src_addr + jmp_offset));
     void* jump_target = (void*)(src_addr + jmp_offset);
+    jmp_table[0] += jmp_offset;
+    jmp_table[1] += jmp_offset;
     // *%rax = rax 레지스터에 있는 값으로 점프 vs *(%rax) rax 레지스터에 있는 값이 가리키는 곳에서 8바이트를 읽고 그곳으로 점프 [rax]
     // "a"(x) : x를 rax에 넣어라
     // "S"(x) : x를 rsi에 넣어라
@@ -111,14 +117,17 @@ void run_one_nop(int max_rounds,int num_ops, unsigned long src_addr){
     asm volatile(
     "call *%%rax\n"
     :
-    : "a"(jump_target), "S"(jmp_table - 1));
+    : "a"(src_addr), "S"((void*)jmp_table - 8));
 
-    
 }
 
 void run_all_num_of_ops(unsigned long src_addr){
-    for (int num_ops = 0; num_ops < MAX_OPS; num_ops++)
-        run_one_nop(NUM_ROUNDS, num_ops,src_addr);
+    for (int num_nops = 1; num_nops < MAX_OPS; num_nops++){
+        
+        run_one_nop(num_nops,src_addr);
+        
+    }
+
 }
 
 
@@ -129,29 +138,55 @@ void set_jump_table(unsigned long src_addr, unsigned long dst_addr){
 }
 
 int main(int argc, char *argv[]){
+
     unsigned long src_addr;
     unsigned long dst_addr;
 
+    int max_num_ops = atoi(argv[1]);
+
     size_t src_snip_size = (size_t)(train_src_call_end - train_src_call_start);
     size_t dst_snip_size = (size_t)(train_dst_call_end - train_dst_call_start);
-
+  
     srandom(getpid());
+   
+    for(int run = 0; run < 1; run++){
+        
+        do{
+            src_addr = ((unsigned long)random() << 16) ^ random();
+            src_addr = map_code(src_addr,train_src_call_start,src_snip_size);
+        } while(src_addr == -1);
+        
+        do{
+            dst_addr = ((unsigned long)random() << 16) ^ random();
+            dst_addr = map_code(dst_addr,train_dst_call_start,dst_snip_size);
+        } while(dst_addr == -1);
 
-    do{
-        src_addr = ((unsigned long)random() << 16) ^ random();
-        src_addr = map_code(src_addr,train_src_call_start,src_snip_size);
-    } while(src_addr == -1);
-    
-    do{
-        dst_addr = ((unsigned long)random() << 16) ^ random();
-        dst_addr = map_code(dst_addr,train_dst_call_start,dst_snip_size);
-    } while(dst_addr == -1);
+        
+        set_jump_table(src_addr, dst_addr);
 
-    
-    set_jump_table(src_addr, dst_addr);
+        run_all_num_of_ops(src_addr);
+        //run_one_nop(max_num_ops,src_addr);
+       
+        clear(src_addr, src_snip_size, dst_addr, dst_snip_size);
 
-    printf("%lx %lx %lx\n",jmp_table[0], jmp_table[1], jmp_table[2]);
-    //run_all_num_of_ops();
-    run_one_nop(1,3,src_addr);
+        
+    }
+ 
     return 0;
 }
+
+void clear(unsigned long src_addr, size_t src_snip_size, unsigned long dst_addr, size_t dst_snip_size) {
+    size_t pagesz = (size_t)getpagesize();
+
+    unsigned long src_base = src_addr & ~0xffful;
+    size_t src_off = (size_t)(src_addr & 0xffful);
+    size_t src_map_len = (src_off + src_snip_size + pagesz - 1) & ~(pagesz - 1);
+
+    unsigned long dst_base = dst_addr & ~0xffful;
+    size_t dst_off = (size_t)(dst_addr & 0xffful);
+    size_t dst_map_len = (dst_off + dst_snip_size + pagesz - 1) & ~(pagesz - 1);
+
+    munmap((void*)src_base, src_map_len);
+    munmap((void*)dst_base, dst_map_len);
+}
+
