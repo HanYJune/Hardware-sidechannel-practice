@@ -1,77 +1,157 @@
-#define _GNU_SOURCE
-#include <x86intrin.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
-#include <sched.h>
-#include <pthread.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <string.h>
 
-static inline __attribute__((always_inline)) void nop(){
-    __asm__ __volatile__(
-        "nop"
-    );
-}
+//#include "compiler.h"
+//#include "stats.h"
+#include "btb_delay.h"
 
-static inline void lfence(void){
-    __asm__ __volatile__(
-        "lfence" : : : "memory"
-    );
-}
+#define MAX_OPS 10
+#define NUM_ROUNDS 100000
 
-static inline void delay_nop(unsigned d){ 
-    for(unsigned i = 0; i < d; i++) 
-        nop();
-}
+#define STR_HELPER(x) #x
+#define STR(x) STR_HELPER(x)
 
-__attribute__((noinline)) void target_A(void) { nop();}
-__attribute__((noinline)) void target_B(void) { nop();}
-__attribute__((noinline)) void target_C(void) { nop();}
-__attribute__((noinline)) void target_D(void) { nop();}
+// typedef code_snip_t code_snip_t;
+// 주어진 어셈블리 코드 조각을 개별 심볼로 주어진 인자 .text 섹션에 박아 넣음
+// .text 영역에 넣는다
+// 4KB 정렬을 강제한다 -> BTB aliasing에 유리하도록 ??
+// 외부에서 참조 가능한 시작 라벨을 만든다
+// 시작 라벨을 함수 타입으로 표시한다
+// 코드 조각의 시작과 끝 라벨을 만든다
+// #name_start -> foo_start (인자가 foo일 경우)
+/*
+    사용법 : 선언 my_snip(foo, "nop\nret\n")
+    C에서 참조 : 
+        - extern char foo_start[], foo_end[];
+        - 길이 : size_t len = (size_t)(foo_end - foo_start)
+        - 함수처럼 호출 : typedef void(*fn_t)(void);
+                        ((fn_t)foo_start)());
 
-typedef void (*target_function)(void);
-target_function TARGETS[] = {target_A, target_B, target_C, target_D};
+    기본 문법 
+        size_t : 객체의 크기/인덱스를 표현하기 위한 표준 정수 타입. 64비트 unsigned integer
+        unsigned long : 
+*/
+#define my_snip(name,code)                      \
+    asm(".pushsection .text\n"                  \  
+        ".balign 0x1000           \n"           \
+        ".global " #name "_start\n"             \  
+        ".type " #name "_start, @function\n"    \
+        #name "_start:\n"                       \
+        code                                    \
+        "\n" #name "_end:\n"                    \
+        ".popsection\n");                        
 
-__attribute__((noinline))
-void source_1(target_function f, unsigned d){
-    volatile target_function vf = f;
-    delay_nop(d);        
-    vf();            
-    delay_nop(d);        
-    vf();            
-    __asm__ __volatile__("" ::: "memory"); // TCO 방지
-}
 
-typedef void (*src_t)(target_function, unsigned);
+// 점프할 코드 타겟 할당
+void* map_code(unsigned long addr, void* code_templ, size_t code_size){
+    // MAP_FIXED_NOREPLACE 플래그는 해당 위치에 강제로 할당하고 이미 있는 자리면 실패를 반환
+    // page alignment
+    size_t off = addr &0xfff;
+    unsigned long base = addr & ~0xfff;
 
-__attribute__((noinline)) void source_2(target_function f, unsigned d){ source_1(f,d); }
-__attribute__((noinline)) void source_3(target_function f, unsigned d){ source_1(f,d); }
-__attribute__((noinline)) void source_4(target_function f, unsigned d){ source_1(f,d); }
-static src_t SOURCES[] = { source_1, source_2, source_3, source_4 };
-
-static inline void pin_cpu0(void){
-    cpu_set_t s;
-    CPU_ZERO(&s);
-    CPU_SET(0,&s);
-
-    if(sched_setaffinity(0,sizeof(s),&s) != 0)
-        perror("sched affinity");
-}
-
-int main(int argc, char* argv[]){
-    pin_cpu0();
-    int d = atoi(argv[1]);
-    int ITERS = 100;
-
-    srand((unsigned)time(NULL));
-
-    for(int i = 0; i < ITERS; i++){
-        //do_B1_B2_indirect_call(TARGETS[rand() % 4],d);
-        src_t s = SOURCES[rand() % 4];
-        target_function  t = TARGETS[rand() % 4];
-        s(t, d);
-
-    }
     
+    void* page = mmap((void*)base,code_size, PROT_READ | PROT_WRITE | PROT_EXEC,MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED_NOREPLACE,-1,0);
+
+    if(page == MAP_FAILED){
+        perror("MMAP");
+        return -1;
+    }
+    // char*로 캐스팅해야 오프셋을 더할 수 있음. void* 타입에 산술연산은 표준이 아님.
+    memcpy((char *)page + off,code_templ,code_size);
+    
+    return page + off;
+}
+
+
+// 점프 테이블 0번째 점프 -> src, 1번째 점프 -> src, 2번째 점프 -> dst(종료)
+unsigned long jmp_table[4];
+
+// my_snip으로 생성된 심볼들을 참조
+extern unsigned char train_src_call_start[];
+extern unsigned char train_src_call_end[];
+
+extern unsigned char train_dst_call_start[];
+extern unsigned char train_dst_call_end[];
+
+/*
+    arg : jmp_table
+    first branch = jmp_table[0] (train_dst_call)
+    second branch = jmp_table[1] = jmp_table[0] + 8 (train_dst_call)
+    last(finish) = jmp_table[2] = train_dst_call
+*/
+my_snip(train_src_call,
+    ".rept " STR(10) "\n"
+    "nop\n"
+    ".endr\n"
+    "lfence\n"
+
+    "addq $8, %rsi\n"
+    "call *(%rsi)\n"
+    "ret\n"
+);
+
+my_snip(train_dst_call,
+    " ret\n"
+);
+
+void run_one_nop(int max_rounds,int num_ops, unsigned long src_addr){
+    
+    unsigned long jmp_offset = MAX_OPS - num_ops;
+    printf("jump to %p", (void*)(src_addr + jmp_offset));
+    void* jump_target = (void*)(src_addr + jmp_offset);
+    // *%rax = rax 레지스터에 있는 값으로 점프 vs *(%rax) rax 레지스터에 있는 값이 가리키는 곳에서 8바이트를 읽고 그곳으로 점프 [rax]
+    // "a"(x) : x를 rax에 넣어라
+    // "S"(x) : x를 rsi에 넣어라
+    // % 하나는 이스케이프임. 즉 %%rax -> %rax
+    asm volatile(
+    "call *%%rax\n"
+    :
+    : "a"(jump_target), "S"(jmp_table - 1));
+
+    
+}
+
+void run_all_num_of_ops(unsigned long src_addr){
+    for (int num_ops = 0; num_ops < MAX_OPS; num_ops++)
+        run_one_nop(NUM_ROUNDS, num_ops,src_addr);
+}
+
+
+void set_jump_table(unsigned long src_addr, unsigned long dst_addr){
+    jmp_table[0] = src_addr;
+    jmp_table[1] = src_addr;
+    jmp_table[2] = dst_addr;
+}
+
+int main(int argc, char *argv[]){
+    unsigned long src_addr;
+    unsigned long dst_addr;
+
+    size_t src_snip_size = (size_t)(train_src_call_end - train_src_call_start);
+    size_t dst_snip_size = (size_t)(train_dst_call_end - train_dst_call_start);
+
+    srandom(getpid());
+
+    do{
+        src_addr = ((unsigned long)random() << 16) ^ random();
+        src_addr = map_code(src_addr,train_src_call_start,src_snip_size);
+    } while(src_addr == -1);
+    
+    do{
+        dst_addr = ((unsigned long)random() << 16) ^ random();
+        dst_addr = map_code(dst_addr,train_dst_call_start,dst_snip_size);
+    } while(dst_addr == -1);
+
+    
+    set_jump_table(src_addr, dst_addr);
+
+    printf("%lx %lx %lx\n",jmp_table[0], jmp_table[1], jmp_table[2]);
+    //run_all_num_of_ops();
+    run_one_nop(1,3,src_addr);
     return 0;
 }

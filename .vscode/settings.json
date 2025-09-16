@@ -1,5 +1,11 @@
 {
     "files.associations": {
-        "string.h": "c"
+        "string.h": "c",
+        "stdlib.h": "c",
+        "fcntl.h": "c",
+        "memtools.h": "c",
+        "compiler.h": "c",
+        "stats.h": "c",
+        "btb_delay.h": "c"
     }
 }
