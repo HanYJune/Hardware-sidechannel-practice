@@ -53,7 +53,7 @@ unsigned long map_code(unsigned long addr, void* code_templ, size_t code_size){
      // MAP_FIXED_NOREPLACE 플래그는 해당 위치에 강제로 할당하고 이미 있는 자리면 실패를 반환
     // page alignment
     size_t pagesz = (size_t)getpagesize();
-    size_t off = addr &0xfff;
+    size_t off = addr & 0xfff;
     unsigned long base = addr & ~0xfff;
     // 할당할 메모리 영역 크기는 [base ~ (base + offset + code_size의 페이지 사이즈로 반올림)]영역임
     size_t map_len = (off + code_size + pagesz - 1) & ~(pagesz - 1);
@@ -61,7 +61,6 @@ unsigned long map_code(unsigned long addr, void* code_templ, size_t code_size){
 
     if(page == MAP_FAILED){
         perror("MMAP");
-        
         return -1;
     }
 
@@ -123,9 +122,7 @@ void run_one_nop(int num_nops, unsigned long src_addr){
 
 void run_all_num_of_ops(unsigned long src_addr){
     for (int num_nops = 1; num_nops < MAX_OPS; num_nops++){
-        
         run_one_nop(num_nops,src_addr);
-        
     }
 
 }
