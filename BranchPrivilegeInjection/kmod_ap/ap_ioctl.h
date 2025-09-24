@@ -5,7 +5,9 @@
 
 struct ap_payload {
     void (*fptr)(void *);
-    void *data;
+    //void*  br_src_addr;
+    //void* v_dst_addr;
+    uint8_t *data;
 };
 
 #ifndef __KERNEL__
@@ -18,10 +20,12 @@ static int fd_ap;
     if (fd_ap <= 0) err(1, "ap_init");\
 } while(0)
 
-static inline int ap_run(void (*fptr)(void *), void *data) {
+static inline int ap_run(void (*fptr)(void *),void *data) {
     struct ap_payload p;
     p.fptr = fptr;
     p.data = data;
+    //p.br_src_addr = br_src_addr;
+    //p.v_dst_addr = v_dst_addr;
     return ioctl(fd_ap, AP_IOCTL_RUN, &p);
 }
 #endif

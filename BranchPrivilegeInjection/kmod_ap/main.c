@@ -22,29 +22,35 @@ static long handle_ioctl(struct file *filp, unsigned int request,
                          unsigned long argp)
 {
     struct ap_payload *ap;
-    /* unsigned long cr4 = __read_cr4(); // mh */
-    unsigned long cr4_mod = 0;
+    unsigned long old_cr4, new_cr4;
 
-    if (cr4 & (X86_CR4_SMEP|X86_CR4_SMAP)) {
-        // ouf we have to disable smap and smep to do this.
-        // This wont work well on VMs since it results in TLB flush.
-        cr4_mod = cr4 & ~(X86_CR4_SMEP|X86_CR4_SMAP);
-    }
+    /* Work with the live CR4, not the snapshot from init. */
+    old_cr4 = __read_cr4();
+    new_cr4 = old_cr4;
+    if (new_cr4 & (X86_CR4_SMEP | X86_CR4_SMAP))
+        new_cr4 &= ~(X86_CR4_SMEP | X86_CR4_SMAP);
 
     switch (request) {
     case AP_IOCTL_RUN:
         ap = (struct ap_payload *)argp;
         preempt_disable();
-        if (cr4_mod) {
-            asm volatile("mov %0 , %%cr4" : "+r" (cr4_mod) : : "memory");
+        if (new_cr4 != old_cr4) {
+            asm volatile("mov %0, %%cr4" :: "r" (new_cr4) : "memory");
+            pr_info("try to disable smep and smap\n");
         }
 
+        /* Verify current CR4 state after the write. */
+        if (__read_cr4() & (X86_CR4_SMEP | X86_CR4_SMAP))
+            pr_info("SMEP/SMAP still enabled (likely blocked by hypervisor)\n");
+        else
+            pr_info("SMEP/SMAP disabled\n");
+        
+        pr_info("jump to %px, and args is %px\n", (void *)ap->fptr, (void *)ap->data);
         // ciao, good luck.
         ap->fptr(ap->data);
-
-        if (cr4_mod) {
-            asm volatile("mov %0,%%cr4": "+r" (cr4) : : "memory");
-        }
+        /* Restore original CR4. */
+        if (new_cr4 != old_cr4)
+            asm volatile("mov %0, %%cr4" :: "r" (old_cr4) : "memory");
 
         preempt_enable();
         break;

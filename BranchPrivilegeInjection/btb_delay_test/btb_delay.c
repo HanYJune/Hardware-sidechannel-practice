@@ -102,13 +102,15 @@ my_snip(train_dst_call,
     " ret\n"
 );
 
-void run_one_nop(int num_nops, unsigned long src_addr){
-    
+void run_one_nop(int num_nops, unsigned long src_addr,long unsigned dst_addr){
+    set_jump_table(src_addr, dst_addr);
+
     unsigned long jmp_offset = MAX_OPS - num_nops;
-    //printf("jump to %p", (void*)(src_addr + jmp_offset));
     void* jump_target = (void*)(src_addr + jmp_offset);
+
     jmp_table[0] += jmp_offset;
     jmp_table[1] += jmp_offset;
+    
     // *%rax = rax 레지스터에 있는 값으로 점프 vs *(%rax) rax 레지스터에 있는 값이 가리키는 곳에서 8바이트를 읽고 그곳으로 점프 [rax]
     // "a"(x) : x를 rax에 넣어라
     // "S"(x) : x를 rsi에 넣어라
@@ -120,9 +122,9 @@ void run_one_nop(int num_nops, unsigned long src_addr){
 
 }
 
-void run_all_num_of_ops(unsigned long src_addr){
+void run_all_num_of_ops(unsigned long src_addr, unsigned long dst_addr){
     for (int num_nops = 1; num_nops < MAX_OPS; num_nops++){
-        run_one_nop(num_nops,src_addr);
+        run_one_nop(num_nops,src_addr,dst_addr);
     }
 
 }
@@ -158,15 +160,10 @@ int main(int argc, char *argv[]){
             dst_addr = map_code(dst_addr,train_dst_call_start,dst_snip_size);
         } while(dst_addr == -1);
 
-        
-        set_jump_table(src_addr, dst_addr);
-
-        run_all_num_of_ops(src_addr);
-        //run_one_nop(max_num_ops,src_addr);
+        //run_all_num_of_ops(src_addr,dst_addr);
+        run_one_nop(max_num_ops,src_addr,dst_addr);
        
-        clear(src_addr, src_snip_size, dst_addr, dst_snip_size);
-
-        
+        clear(src_addr, src_snip_size, dst_addr, dst_snip_size);  
     }
  
     return 0;
