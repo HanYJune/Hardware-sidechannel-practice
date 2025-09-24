@@ -29,6 +29,8 @@
         "ostream": "c",
         "utility": "c",
         "ap_ioctl.h": "c",
-        "bp_tools.h": "c"
+        "bp_tools.h": "c",
+        "cstring": "c",
+        "variant": "c"
     }
 }
