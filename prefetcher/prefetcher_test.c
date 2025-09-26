@@ -25,19 +25,20 @@ int main(void){
     for(int i = 0; i < 1000; i++) public_data[i] = i;
 
     t0 = rdtsc();
-    temp ^= *(volatile uint8_t *)(probe + public_data[999] * STRIDE);
+    temp ^= *(volatile uint8_t *)(probe + 999 * STRIDE);
     t1 = rdtsc();
     printf("cache miss : %ld\n", t1 - t0);
 
 
-    temp ^= *(volatile uint8_t *)(probe);
+    temp ^= *(volatile uint8_t *)(probe); 
+
     /*
     t0 = rdtsc();
     temp ^= *(volatile uint8_t *)(probe + public_data[0] *STRIDE);
     t1 = rdtsc();
     printf("cache hit : %ld\n", t1 - t0);
-
     */
+   
     t0 = rdtsc();
     temp ^= *(volatile uint8_t *)(probe +  STRIDE);
     t1 = rdtsc();
