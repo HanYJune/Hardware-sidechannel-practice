@@ -1,0 +1,1 @@
+savedcmd_check_smep.ko := ld -r -m elf_x86_64 -z noexecstack --no-warn-rwx-segments --build-id=sha1  -T /usr/src/linux-headers-6.14.0-29-generic/scripts/module.lds -o check_smep.ko check_smep.o check_smep.mod.o .module-common.o

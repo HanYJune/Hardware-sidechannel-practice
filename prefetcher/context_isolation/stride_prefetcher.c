@@ -2,7 +2,7 @@
 #include <sched.h>
 #include <stdint.h>
 #include <x86intrin.h>
-
+// gcc -O2 -fno-tree-vectorize -fno-unroll-loops -fno-inline     -Wall -pthread stride_prefetcher.c -o stride_prefetcher
 #define my_snip(name,code)      \
     asm(".pushsection .text\n"  \
         ".balign 0x1000\n"      \
@@ -20,7 +20,7 @@
 
 static const size_t TRASH_SZ = (64UL<<20);
 static const size_t PAGES = 8192;
-static const int pattern[] = {9,15,4,1};
+static const int pattern[] = {1,3,5,7};
 static const int patternLength = sizeof(pattern) / sizeof(pattern[0]);
 
 
@@ -30,15 +30,18 @@ static void pinToCore(int core) {
 }
 
 __attribute__((noinline))
+static void load(uint8_t *base, int i){
+    volatile uint8_t sum = 0;
+    size_t offset = (size_t)pattern[i] * LINE_SIZE;
+    sum ^= base[offset];
+}
+
+__attribute__((noinline))
 static void trainOnePage(uint8_t *base){
-    
-    
     for (int i=0; i<patternLength; i++){
-        size_t off = (size_t)pattern[i] * LINE_SIZE;
         load(base,i);
     }
 
-  
 }
 
 static void trash_llc(uint8_t *trash, size_t sz){
@@ -47,12 +50,7 @@ static void trash_llc(uint8_t *trash, size_t sz){
     (void)acc;
 }
 
-__attribute__((noinline))
-static void load(uint8_t *base, int i){
-    volatile uint8_t sum;
-    size_t offset = (size_t)pattern[i] * LINE_SIZE;
-    sum ^= base[offset];
-}
+
 
 int main(void){
     pinToCore(0);
@@ -73,11 +71,14 @@ int main(void){
         pages[p] = buf + p * PAGE_SIZE;
     }
 
-    //train
-    for(size_t p = 0; p < PAGES - 1; p++){
-        trainOnePage(pages[p]);
+    // train
+    for(int i = 0; i <1000 ; i++){
+        for(size_t p = 0; p < PAGES - 1; p++){
+            trainOnePage(pages[p]);
+        }
     }
     
+    // reset cache
     uint8_t *trash;
     if (posix_memalign((void**)&trash, 128, TRASH_SZ)) {
         perror("posix_memalign(trash)"); return 1;
@@ -86,16 +87,20 @@ int main(void){
 
     trash_llc(trash, TRASH_SZ);
 
-    volatile uint8_t sink = 0;
+    volatile unsigned long sink = 0;
     int testPage = PAGES - 1;
 
+
+    // probe
     uint64_t t1 = __rdtscp(&sink);
     load(pages[testPage],0);
     uint64_t t2 = __rdtscp(&sink);
     printf("first pattern access time : %ld\n", t2 - t1);
 
-    uint8_t offset;
-    for(int i = 1; i < patternLength; i++){\
+
+    // check if sms prefetcher triggered.
+    size_t offset;
+    for(int i = 0; i < patternLength; i++){\
         t1 = __rdtscp(&sink);
         offset = pattern[i] * LINE_SIZE;
         sink ^= pages[testPage][offset];
@@ -104,15 +109,16 @@ int main(void){
     }
 
 
+    // check if not pattern location not prefetched
     t1 = __rdtscp(&sink);
-    offset = 60 * LINE_SIZE;
+    offset = 9 * LINE_SIZE;
     sink ^= pages[testPage][offset];
     t2 = __rdtscp(&sink);
     printf("not pattern access time : %ld\n", t2 - t1);
 
     t1 = __rdtscp(&sink);
-    offset = 3 * LINE_SIZE;
+    offset = 7 * LINE_SIZE;
     sink ^= pages[testPage][offset];
     t2 = __rdtscp(&sink);
-    printf("not pattern access time : %ld\n", t2 - t1);
+    printf("pattern access time : %ld\n", t2 - t1);
 }
