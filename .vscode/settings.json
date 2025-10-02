@@ -31,6 +31,7 @@
         "ap_ioctl.h": "c",
         "bp_tools.h": "c",
         "cstring": "c",
-        "variant": "c"
+        "variant": "c",
+        "emmintrin.h": "c"
     }
 }
